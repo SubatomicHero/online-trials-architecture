@@ -1,6 +1,8 @@
 ---
   AWSTemplateFormatVersion: 2010-09-09
+
   Description: "Control Architecture for allocating and managing Online Trials"
+
   Metadata:
     AWS::CloudFormation::Interface:
       ParameterGroups:
@@ -38,6 +40,7 @@
             default: CI Parameters
           Parameters:
             - UpdatedTime
+
   Parameters:
     AdminUsername:
       Type: String
@@ -119,9 +122,11 @@
       Description: The URI that all requests for trials will be made to.
       Default: online-trial
       MinLength: 4
+
   Conditions:
     CreatedByBamboo: !Equals [!Ref CreatedBy, Bamboo]
     InNVirginia: !Equals [!Ref "AWS::Region", us-east-1]
+
   Mappings:
     SecurityGroup:
       us-east-1: 
@@ -138,12 +143,14 @@
         id: subnet-ac7f8ff5
       eu-west-1:
         id: subnet-fe1cc499
+  
   Resources:
     OnlineTrialRequestAPI:
       Type: AWS::ApiGateway::RestApi
       Properties:
         Description: API that consumes requests for Online Trial stacks
         Name: OnlineTrialAPI
+
     OnlineTrialRequestResource:
       Type: AWS::ApiGateway::Resource
       DependsOn:
@@ -152,15 +159,20 @@
         ParentId: !GetAtt OnlineTrialRequestAPI.RootResourceId
         PathPart: !Ref URI
         RestApiId: !Ref OnlineTrialRequestAPI
+
     OnlineTrialRequestSQS:
       Type: AWS::SQS::Queue
       Properties:
         MessageRetentionPeriod: 86400 # 24 hours
+        VisibilityTimeout: 120
         # QueueName omitted so this resource can be updated
+
     OnlineTrialInstanceRequestSQS:
       Type: AWS::SQS::Queue
       Properties:
         MessageRetentionPeriod: 86400
+        VisibilityTimeout: 150
+
     OnlineTrialAssignUserHandlerIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -177,6 +189,8 @@
               Action:
                 - sts:AssumeRole
         Path: "/"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
           - PolicyName: OnlineTrialInstanceRequestLambdaExecPolicy
             PolicyDocument:
@@ -184,15 +198,10 @@
               Statement:
                 - Effect: Allow
                   Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
-                - Effect: Allow
-                  Action:
                     - sqs:ReceiveMessage
                     - sqs:DeleteMessage
+                    - sqs:ChangeMessageVisibility
+                    - sqs:GetQueueAttributes
                   Resource:
                     - !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${OnlineTrialInstanceRequestSQS.QueueName}"
                 - Effect: Allow
@@ -210,6 +219,7 @@
                     - ec2:DescribeTags
                   Resource:
                     - "*"
+
     OnlineTrialAssignUserHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -242,24 +252,14 @@
         Role: !GetAtt OnlineTrialAssignUserHandlerIamRole.Arn
         Runtime: python2.7
         Timeout: 120
-    OnlineTrialAssignUserScheduleRule:
-      Type: AWS::Events::Rule
-      DependsOn:
-        - OnlineTrialAssignUserHandler
+
+    OnlineTrialAssignUserEventStream:
+      Type: AWS::Lambda::EventSourceMapping
       Properties:
-        Description: Polls a queue to assign users to a stack
-        ScheduleExpression: cron(0/1 * * * ? *)
-        State: ENABLED
-        Targets:
-          - Arn: !GetAtt OnlineTrialAssignUserHandler.Arn
-            Id: !Ref OnlineTrialAssignUserHandler
-    OnlineTrialAssignUserInvokePermission:
-      Type: AWS::Lambda::Permission
-      Properties:
+        BatchSize: 10
+        EventSourceArn: !GetAtt OnlineTrialInstanceRequestSQS.Arn
         FunctionName: !Ref OnlineTrialAssignUserHandler
-        Action: lambda:InvokeFunction
-        Principal: events.amazonaws.com
-        SourceArn: !GetAtt OnlineTrialAssignUserScheduleRule.Arn
+
     OnlineTrialInstanceRequestHandlerIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -276,6 +276,8 @@
               Action:
                 - sts:AssumeRole
         Path: "/"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
           - PolicyName: OnlineTrialInstanceRequestLambdaExecPolicy
             PolicyDocument:
@@ -283,15 +285,10 @@
               Statement:
                 - Effect: Allow
                   Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
-                - Effect: Allow
-                  Action:
                     - sqs:ReceiveMessage
                     - sqs:DeleteMessage
+                    - sqs:ChangeMessageVisibility
+                    - sqs:GetQueueAttributes
                   Resource:
                     - !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${OnlineTrialRequestSQS.QueueName}"
                 - Effect: Allow
@@ -315,6 +312,7 @@
                     - ec2:CreateTags
                   Resource:
                     - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"
+
     OnlineTrialRequestDynamoDbTable:
       Type: AWS::DynamoDB::Table
       DependsOn:
@@ -334,6 +332,7 @@
           ReadCapacityUnits: 5
           WriteCapacityUnits: 5
         # TableName not provided to allow updating/adding to indexes
+
     OnlineTrialAssignStackDynamoDbTable:
       Type: AWS::DynamoDB::Table
       DependsOn:
@@ -364,6 +363,7 @@
         ProvisionedThroughput:
           ReadCapacityUnits: 5
           WriteCapacityUnits: 5
+
     OnlineTrialFulfillmentIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -381,18 +381,13 @@
               Action:
                 - sts:AssumeRole
         Path: "/"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
           - PolicyName: OnlineTrialFulfillmentLambdaExecPolicy
             PolicyDocument:
               Version: 2012-10-17
               Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
                 - Effect: Allow
                   Action:
                     - sns:Publish
@@ -403,6 +398,7 @@
                     - dynamodb:Scan
                   Resource:
                     - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OnlineTrialRequestDynamoDbTable}"
+
     OnlineTrialFulfillmentHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -428,6 +424,7 @@
         Role: !GetAtt OnlineTrialFulfillmentIamRole.Arn
         Runtime: python2.7
         Timeout: 10
+
     OnlineTrialFulfillmentScheduleRule:
       Type: AWS::Events::Rule
       DependsOn:
@@ -440,6 +437,7 @@
         Targets:
           - Arn: !GetAtt OnlineTrialFulfillmentHandler.Arn
             Id: !Ref OnlineTrialFulfillmentHandler
+
     OnlineTrialFulfillmentInvokePermission:
       Type: AWS::Lambda::Permission
       Properties:
@@ -447,6 +445,7 @@
         Action: lambda:InvokeFunction
         Principal: events.amazonaws.com
         SourceArn: !GetAtt OnlineTrialFulfillmentScheduleRule.Arn
+
     OnlineTrialRequestHandlerIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -463,18 +462,13 @@
               Action:
                 - sts:AssumeRole
         Path: "/"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
           - PolicyName: OnlineTrialRequestLambdaExecPolicy
             PolicyDocument:
               Version: 2012-10-17
               Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
                 - Effect: Allow
                   Action:
                     - sqs:SendMessage
@@ -485,6 +479,7 @@
                     - dynamodb:UpdateItem
                   Resource:
                     - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${OnlineTrialRequestDynamoDbTable}"
+
     OnlineTrialRequestHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -513,6 +508,7 @@
         Role: !GetAtt OnlineTrialRequestHandlerIamRole.Arn
         Runtime: python2.7
         Timeout: 90
+
     OnlineTrialInstanceRequestHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -538,27 +534,16 @@
         Handler: InstanceRequestHandlerLambda.lambda_handler
         MemorySize: 256
         Role: !GetAtt OnlineTrialInstanceRequestHandlerIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 60
-    OnlineTrialInstanceRequestScheduleRule:
-      Type: AWS::Events::Rule
-      DependsOn:
-        - OnlineTrialInstanceRequestHandler
+
+    OnlineTrialInstanceRequestEventStream:
+      Type: AWS::Lambda::EventSourceMapping
       Properties:
-        # Name not provided to allow updates
-        Description: Polls a queue for requests
-        ScheduleExpression: cron(0/1 * * * ? *) # Runs every minute
-        State: ENABLED
-        Targets:
-          - Arn: !GetAtt OnlineTrialInstanceRequestHandler.Arn
-            Id: !Ref OnlineTrialInstanceRequestHandler
-    OnlineTrialInstanceRequestInvokePermission:
-      Type: AWS::Lambda::Permission
-      Properties:
+        BatchSize: 10
+        EventSourceArn: !GetAtt OnlineTrialRequestSQS.Arn
         FunctionName: !Ref OnlineTrialInstanceRequestHandler
-        Action: lambda:InvokeFunction
-        Principal: events.amazonaws.com
-        SourceArn: !GetAtt OnlineTrialInstanceRequestScheduleRule.Arn
+
     OnlineTrialRequestSNSTopic:
       Type: AWS::SNS::Topic
       DependsOn:
@@ -569,6 +554,7 @@
         Subscription:
           - Endpoint: !GetAtt OnlineTrialRequestHandler.Arn
             Protocol: lambda
+
     OnlineTrialRequestHandlerInvokePermission:
         Type: AWS::Lambda::Permission
         Properties:
@@ -576,6 +562,7 @@
           FunctionName: !Ref OnlineTrialRequestHandler
           Principal: sns.amazonaws.com
           SourceArn: !Ref OnlineTrialRequestSNSTopic
+
     OnlineTrialRequestProxyExecRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -600,6 +587,7 @@
                     - sns:Publish
                   Resource:
                     - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${OnlineTrialRequestSNSTopic.TopicName}"
+
     OnlineTrialRequestGetMethod:
       Type: AWS::ApiGateway::Method
       Properties:
@@ -616,6 +604,7 @@
           Type: MOCK
         ResourceId: !Ref OnlineTrialRequestResource
         RestApiId: !Ref OnlineTrialRequestAPI
+
     OnlineTrialRequestPostMethod:
       Type: AWS::ApiGateway::Method
       DependsOn:
@@ -643,6 +632,7 @@
           method.request.header.topicarn: true
         ResourceId: !Ref OnlineTrialRequestResource
         RestApiId: !Ref OnlineTrialRequestAPI
+
     OnlineTrialRequestDeployment:
       Type: AWS::ApiGateway::Deployment
       DependsOn:
@@ -650,6 +640,7 @@
         - OnlineTrialRequestPostMethod
       Properties:
         RestApiId: !Ref OnlineTrialRequestAPI
+
     OnlineTrialRequestStage:
       Type: AWS::ApiGateway::Stage
       DependsOn:
@@ -665,6 +656,7 @@
             ResourcePath: "/*"
         RestApiId: !Ref OnlineTrialRequestAPI
         StageName: !Ref Stage
+
     OnlineTrialRequestApiKey:
       Type: AWS::ApiGateway::ApiKey
       DependsOn:
@@ -676,6 +668,7 @@
         StageKeys:
           - RestApiId: !Ref OnlineTrialRequestAPI
             StageName: !Ref Stage
+
     OnlineTrialRequestUsagePlan:
       Type: AWS::ApiGateway::UsagePlan
       DependsOn:
@@ -690,6 +683,7 @@
           Limit: 500
           Period: MONTH
         UsagePlanName: Plan_Online_Trials
+
     OnlineTrialRequestUsagePlanKey:
       Type: AWS::ApiGateway::UsagePlanKey
       DependsOn:
@@ -699,6 +693,7 @@
         KeyId: !Ref OnlineTrialRequestApiKey
         KeyType: API_KEY
         UsagePlanId: !Ref OnlineTrialRequestUsagePlan
+
     OnlineTrialRequestCloudWatchLogsRole:
       Type: AWS::IAM::Role
       Properties:
@@ -724,12 +719,14 @@
                     - sns:Publish
                   Resource:
                     - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${OnlineTrialRequestSNSTopic.TopicName}"
+
     OnlineTrialRequestAccount:
       Type: AWS::ApiGateway::Account
       DependsOn:
         - OnlineTrialRequestCloudWatchLogsRole
       Properties:
         CloudWatchRoleArn: !GetAtt OnlineTrialRequestCloudWatchLogsRole.Arn
+
     OnlineTrialLifecycleIamRole:
       Type: AWS::IAM::Role
       Properties:
@@ -743,18 +740,9 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: OnlineTrialLifecycleLogsPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: OnlineTrialLifecycleStopEc2Policy
             PolicyDocument:
               Version: 2012-10-17
@@ -821,6 +809,7 @@
                     - opsworks:DescribeInstances
                   Resource:
                     - "*"
+
     OnlineTrialLifecycleHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -849,6 +838,7 @@
         Role: !GetAtt OnlineTrialLifecycleIamRole.Arn
         Runtime: python2.7
         Timeout: 180
+
     OnlineTrialLifecycleScheduleRule:
       Type: AWS::Events::Rule
       DependsOn:
@@ -861,6 +851,7 @@
         Targets:
           - Arn: !GetAtt OnlineTrialLifecycleHandler.Arn
             Id: !Ref OnlineTrialLifecycleHandler
+
     OnlineTrialLifecycleInvokePermission:
       Type: AWS::Lambda::Permission
       Properties:
@@ -868,6 +859,7 @@
         FunctionName: !Ref OnlineTrialLifecycleHandler
         Principal: events.amazonaws.com
         SourceArn: !GetAtt OnlineTrialLifecycleScheduleRule.Arn
+
     OnlineTrialStackTemplateBucket:
       Type: AWS::S3::Bucket
       DeletionPolicy: Retain  # deleted by the custom lambda
@@ -882,6 +874,7 @@
             Value: Online Trials Template Bucket
         VersioningConfiguration:
           Status: Enabled
+
     OnlineTrialStackBuilderIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -899,18 +892,9 @@
                   - cloudformation.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: OnlineTrialStackBuilderLogsPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: OnlineTrialStackBuilderExecPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -978,6 +962,7 @@
                     - lambda:InvokeFunction
                   Resource:
                     - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+
     OnlineTrialScheduledStackBuilder:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -997,6 +982,7 @@
             stack_count: !Ref MinimumStackCount
             stage: !Ref Stage
             template_bucket_name: !Ref OnlineTrialStackTemplateBucket
+
         FunctionName:
           !If
           - CreatedByBamboo
@@ -1007,6 +993,7 @@
         Role: !GetAtt OnlineTrialStackBuilderIamRole.Arn
         Runtime: python2.7
         Timeout: 90
+
     OnlineTrialStackBuilderScheduleRule:
       Type: AWS::Events::Rule
       DependsOn:
@@ -1019,6 +1006,7 @@
         Targets:
           - Arn: !GetAtt OnlineTrialScheduledStackBuilder.Arn
             Id: !Ref OnlineTrialScheduledStackBuilder
+
     OnlineTrialStackBuilderInvokePermission:
       Type: AWS::Lambda::Permission
       Properties:
@@ -1026,6 +1014,7 @@
         FunctionName: !Ref OnlineTrialScheduledStackBuilder
         Principal: events.amazonaws.com
         SourceArn: !GetAtt OnlineTrialStackBuilderScheduleRule.Arn
+
     OnlineTrialTemplatesBucketHandlerIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -1042,18 +1031,9 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: OnlineTrialTemplatesBucketHandlerLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource: 
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: OnlineTrialStackBuilderBucketReaderPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1068,6 +1048,7 @@
                   Resource:
                     - !GetAtt OnlineTrialStackTemplateBucket.Arn
                     - !Sub "${OnlineTrialStackTemplateBucket.Arn}/*"
+
     OnlineTrialTemplateBucketFillerHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -1075,38 +1056,42 @@
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             import uuid
-            import os
+            from os import environ
             import cfnresponse
             import urllib
             import boto3
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            client = boto3.client('s3')
 
             def handler(event, context):
               # if the event is create or update, add a new version of the template to the bucket
               # if the event is delete, do nothing as the EmptyBucketLambda will handle it
               try:
-                branch = 'develop' if os.environ['stage'] == 'test' else 'master'
-                url = os.environ['url'].format(branch)
+                branch = 'develop' if environ['stage'] == 'test' else 'master'
+                url = environ['url'].format(branch)
                 filename = "online-trial-stack-{}.yaml".format(branch)
                 eventType = event['RequestType']
                 physicalResourceId = str(uuid.uuid1()) if eventType == 'Create' else event['PhysicalResourceId']
                 if eventType == 'Create' or eventType == 'Update':
-                  client = boto3.client('s3')
-                  print("Event type {} ".format(eventType))
+                  logger.info("Event type {} ".format(eventType))
                   response = urllib.urlopen(url)
                   payload = response.read()
                   with open("/tmp/{}".format(filename), "wb") as f:
                     f.write(payload)
                   # Upload the file to s3
                   with open("/tmp/{}".format(filename), "rb") as r:
-                    client.upload_fileobj(r, os.environ['bucket_name'], filename)
+                    client.upload_fileobj(r, environ['bucket_name'], filename)
                   
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physicalResourceId)
                 else:
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physicalResourceId)
               except Exception as err:
-                print("{}\n".format(err))
+                logger.info(str(err))
                 cfnresponse.send(event, context, cfnresponse.FAILED, {})
         Environment:
           Variables:
@@ -1115,8 +1100,9 @@
             url: "https://raw.githubusercontent.com/Alfresco/online-trials-architecture/{}/cloudformation/online-trial-stack.yaml"
         Handler: index.handler
         Role: !GetAtt OnlineTrialTemplatesBucketHandlerIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+
     OnlineTrialTemplatesBucketFillerCustomResource:
       Type: Custom::BucketFiller
       DependsOn:
@@ -1124,6 +1110,7 @@
       Properties:
         ServiceToken: !GetAtt OnlineTrialTemplateBucketFillerHandler.Arn
         UpdatedTime: !Ref UpdatedTime
+
     OnlineTrialTemplatesBucketLifeCycleHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -1141,6 +1128,7 @@
         Role: !GetAtt OnlineTrialTemplatesBucketHandlerIamRole.Arn
         Runtime: java8
         Timeout: 15
+
     OnlineTrialTemplatesBucketLifecycleCustomResource:
       Type: Custom::EmptyBucket
       DependsOn:
@@ -1148,6 +1136,7 @@
       Properties:
         ServiceToken: !GetAtt OnlineTrialTemplatesBucketLifeCycleHandler.Arn
         BucketName: !Ref OnlineTrialStackTemplateBucket
+
     OnlineTrialAPICustomDomainNameIamRole:
       Type: AWS::IAM::Role
       DependsOn:
@@ -1165,18 +1154,9 @@
                   - apigateway.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: OnlineTrialDomainHandlerLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource: 
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: OnlineTrialAPIDomainHandlerPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1200,6 +1180,7 @@
                   Action:
                     - cloudfront:UpdateDistribution
                   Resource: "*"
+
     OnlineTrialAPICustomDomainNameHandler:
       Type: AWS::Lambda::Function
       DependsOn:
@@ -1227,14 +1208,16 @@
           - !Sub "ApiGatewayDomainName-${Stage}"
         Handler: api_domain_name.handler
         Role: !GetAtt OnlineTrialAPICustomDomainNameIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+
     OnlineTrialAPICustomDomainCustomResource:
       Type: Custom::APIDomainName
       DependsOn:
         - OnlineTrialAPICustomDomainNameHandler
       Properties:
         ServiceToken: !GetAtt OnlineTrialAPICustomDomainNameHandler.Arn
+
     OnlineTrialAPIBasepathMapping:
       Type: AWS::ApiGateway::BasePathMapping
       DependsOn:
@@ -1250,6 +1233,7 @@
           - !Sub "request${Stage}.trial.alfresco.com"
         RestApiId: !Ref OnlineTrialRequestAPI
         Stage: !Ref Stage
+
     OnlineTrialOpsWorksStack:
       Type: AWS::OpsWorks::Stack
       Properties:
@@ -1270,6 +1254,7 @@
         UseCustomCookbooks: true
         UseOpsworksSecurityGroups: true
         VpcId: !FindInMap [ VPC , !Ref "AWS::Region", 'id' ]
+
     OnlineTrialOpsWorksAlfrescoLayer:
       Type: AWS::OpsWorks::Layer
       DependsOn:
@@ -1285,6 +1270,7 @@
         Shortname: !Sub "otalf-${Stage}"
         StackId: !Ref OnlineTrialOpsWorksStack
         Type: custom
+
     OnlineTrialLambdaUpdaterIamProfile:
       Type: AWS::IAM::Role
       Properties:
@@ -1298,6 +1284,8 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
           - PolicyName: OnlineTrialLambdaUpdaterPolicy
             PolicyDocument:
@@ -1321,17 +1309,7 @@
                       - InNVirginia
                       - !Sub "arn:aws:s3:::online-trial-devops-lambda-${Stage}/*"
                       - !Sub "arn:aws:s3:::online-trial-devops-lambda-${AWS::Region}-${Stage}/*"
-          - PolicyName: OnlineTrialLambdaUpdaterLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource: 
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
     OnlineTrialLambdaUpdater:
       # Triggered by an s3 upload
       Type: AWS::Lambda::Function
@@ -1340,14 +1318,18 @@
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             import boto3
-            import os
+            from os import environ
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            client = boto3.client('lambda')
             
             def handler(event, context):
               # update the function code relating to the key name
               try:
-                client = boto3.client('lambda')
                 if 'Records' in event:
                   for record in event['Records']:
                     filename = record['s3']['object']['key']
@@ -1356,17 +1338,17 @@
                     try:
                       response = client.get_function(FunctionName=function_name)
                     except:
-                      print("Function {} not found, skipping".format(function_name))
+                      logger.info("Function {} not found, skipping".format(function_name))
                       continue
                     
                     response = client.update_function_code(
                       FunctionName=function_name,
-                      S3Bucket=os.environ['bucket_name'],
+                      S3Bucket=environ['bucket_name'],
                       S3Key=filename
                     )
-                    print("Function {} updated".format(function_name))
+                    logger.info("Function {} updated".format(function_name))
               except Exception as err:
-                print("{}\n".format(err))
+                logger.info(str(err))
         Environment:
           Variables:
             bucket_name:
@@ -1381,8 +1363,9 @@
           - !Sub "LambdaUpdater-${Stage}"
         Handler: index.handler
         Role: !GetAtt OnlineTrialLambdaUpdaterIamProfile.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+
     # These resources are created but used by the stacks, not the control system itself
     TrialRoute53DomainNameGenIamRole:
       Type: AWS::IAM::Role
@@ -1397,44 +1380,37 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
-        Policies:
-          - PolicyName: TrialRoute53DomainNameGenLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
     TrialRoute53DomainNameGenerator:
       Type: AWS::Lambda::Function
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             from datetime import datetime, timedelta
-            import os
+            from os import environ
             import cfnresponse
-            import random
-            import string
+            from random import choice
+            from string import ascii_lowercase, digits
+
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
 
             def handler(event, context):
               try:
                 if event['RequestType'] == 'Create':
-                  name = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
-                  responseData = {}
-                  responseData['DomainName'] = name
-                  d = datetime.today() + timedelta(days=int(os.environ['days_to_stop']))
+                  name = ''.join(choice(ascii_lowercase + digits) for _ in range(6))
+                  responseData = {'DomainName': name}
+                  d = datetime.today() + timedelta(days=int(environ['days_to_stop']))
                   responseData['ExpiryDate'] = d.date().strftime('%d-%m-%Y')
-                  print(responseData)
+                  logger.info(responseData)
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
                 else:
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
               except Exception as err:
-                print("{}\n".format(err))
+                logger.info(str(err))
                 cfnresponse.send(event, context, cfnresponse.FAILED, {})
         Environment:
           Variables:
@@ -1446,8 +1422,9 @@
           - !Sub "DomainNameGenerator-${Stage}"
         Handler: index.handler
         Role: !GetAtt TrialRoute53DomainNameGenIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+
     TrialSubnetIdAllocatorIamRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1461,18 +1438,9 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: TrialSubnetIdAllocatorLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: TrialSubnetIdAllocatorPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1482,25 +1450,30 @@
                     - ec2:DescribeSubnets
                   Resource:
                     - "*"
+
     TrialSubnetIdAllocator:
       Type: AWS::Lambda::Function
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             import cfnresponse
-            import os
+            from os import environ
             import boto3
             import random
 
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            client = boto3.client('ec2')
+
             def handler(event, context):
-              client = boto3.client('ec2')
               try:
                 if event['RequestType'] == 'Create':
                   response = client.describe_subnets(
                     Filters=[{
                         'Name': 'vpc-id',
-                        'Values': [os.environ['vpc_id']]
+                        'Values': [environ['vpc_id']]
                       }
                     ]
                   )
@@ -1514,7 +1487,7 @@
                 else:
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
               except Exception as err:
-                print("{}\n".format(err))
+                logger.error(str(err))
                 cfnresponse.send(event, context, cfnresponse.FAILED, {})
         Environment:
           Variables:
@@ -1526,8 +1499,9 @@
           - !Sub "SubnetAllocator-${Stage}"
         Handler: index.handler
         Role: !GetAtt TrialSubnetIdAllocatorIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+
     TrialRoute53RecordSetIamRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1547,18 +1521,9 @@
                   - !Ref SystemsRole
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: TrialRoute53RecordSetLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: TrialRoute53RecordSetAccessPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1577,33 +1542,38 @@
                     - ec2:DescribeInstances
                   Resource:
                     - "*"
+
     TrialRoute53RecordSetHandler:
       Type: AWS::Lambda::Function
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
-            import os
+            import logging
+            from os import environ
             import boto3
             from botocore.exceptions import ClientError
 
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            sts = boto3.client('sts')
+            ec2 = boto3.client('ec2')
+
             def handler(event, context):
-              try:
-                sts = boto3.client('sts')
+              try:                
                 role = sts.assume_role(
-                  RoleArn=os.environ['role'],
+                  RoleArn=environ['role'],
                   RoleSessionName=event['id']
                 )
-                print("Role Assumed OK")	
+                logger.info("Role Assumed OK")	
                 client = boto3.client(
                   'route53',
                   aws_access_key_id=role['Credentials']['AccessKeyId'],
                   aws_secret_access_key=role['Credentials']['SecretAccessKey'],
                   aws_session_token=role['Credentials']['SessionToken']
                 )
-                print("Cross account R53 client created OK")
+                logger.info("Cross account R53 client created OK")
                 action = 'DELETE' if event['detail']['state'] == 'shutting-down' else 'UPSERT'
-                ec2 = boto3.client('ec2')
                 data = ec2.describe_instances(InstanceIds=[event['detail']['instance-id']])
                 name = None
                 for instance in data['Reservations'][0]['Instances']:
@@ -1612,12 +1582,12 @@
                     for tag in instance['Tags']:
                       if tag['Key'] == 'Name':
                         if 'trial' not in tag['Value']:
-                          print("{} is not a trial instance".format(tag['Value']))
+                          logger.info("{} is not a trial instance".format(tag['Value']))
                           return 'SUCCESS'
                         name = tag['Value'].split('.')[0]
                       elif tag['Key'] == 'Stage':
                         if tag['Value'] != os.environ['stage']:
-                          print("Ignoring {}, not on the same stage".format(event['detail']['instance-id']))
+                          logger.info("Ignoring {}, not on the same stage".format(event['detail']['instance-id']))
                           return 'SUCCESS'
                 
                 if not name:
@@ -1630,7 +1600,7 @@
                     MaxItems='1'
                   )['ResourceRecordSets'][0]['ResourceRecords'][0]['Value']
                 
-                print("action: {}, name: {}, ip: {}".format(action, name, public_ip))                
+                logger.info("action: {}, name: {}, ip: {}".format(action, name, public_ip))                
                 requestData = {
                   'Changes': [
                     {
@@ -1655,13 +1625,13 @@
                 return 'SUCCESS'
               except ClientError as e:
                 if e.response['Error']['Code'] == 'InvalidChangeBatch':
-                  print("Could not delete record. Please delete it manually")
+                  logger.error("Could not delete record. Please delete it manually")
                   return 'SUCCESS'
                 else:
-                  print("{}".format(e.response['Error']['Message']))
+                  logger.error("{}".format(e.response['Error']['Message']))
                   return 'FAILURE'
               except Exception as err:
-                print("{}\n".format(err))
+                logger.error(str(err))
                 return 'FAILURE'
         Environment:
           Variables:
@@ -1675,8 +1645,9 @@
           - !Sub "RecordSetCreator-${Stage}"
         Handler: index.handler
         Role: !GetAtt TrialRoute53RecordSetIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 30
+
     Ec2InstanceStateChangeRule:
       Type: AWS::Events::Rule
       DependsOn:
@@ -1696,6 +1667,7 @@
         Targets:
           - Arn: !GetAtt TrialRoute53RecordSetHandler.Arn
             Id: !Ref TrialRoute53RecordSetHandler
+    
     PermissionForEc2StateChangeToInvokeLambda:
       Type: AWS::Lambda::Permission
       Properties:
@@ -1703,6 +1675,7 @@
         Action: lambda:InvokeFunction
         Principal: events.amazonaws.com
         SourceArn: !GetAtt Ec2InstanceStateChangeRule.Arn
+
     TrialOpsWorkRegisterHandlerIamRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1716,18 +1689,9 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: TrialOpsWorksRegisterLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: TrialOpsWorkRegisterHandlerPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1739,24 +1703,30 @@
                     - opsworks:DeregisterInstance
                   Resource:
                     - "*"
+                  
     TrialOpsWorksRegisterHandler:
       Type: AWS::Lambda::Function
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             import cfnresponse
-            import os
+            from os import environ
             import boto3
 
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            client = boto3.client('opsworks', region_name='us-east-1')
+
             def handler(event, context):
-              try:
-                client = boto3.client('opsworks', region_name='us-east-1')
-                response = client.describe_instances(StackId=os.environ['stack_id'])
+              logger.info(event)
+              try:                
+                response = client.describe_instances(StackId=environ['stack_id'])
                 data = {}
                 for instance in response['Instances']:
                   if instance['Hostname'] == event['ResourceProperties']['Hostname']:
-                    print("Instance found - {}".format(instance['InstanceId']))
+                    logger.info("Instance found - {}".format(instance['InstanceId']))
                     if event['RequestType'] == 'Create':
                       data['InstanceId'] = instance['InstanceId']
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, data)
@@ -1768,10 +1738,12 @@
                       elif instance['Status'] == 'stopped':
                         client.delete_instance(InstanceId=instance['InstanceId'])
                       
-                      print("Instance removed from stack")
+                      logger.info("Instance removed from stack")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, data)
+                    else:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, data)
               except Exception as err:
-                print("{}\n".format(err))
+                logger.info(str(err))
                 cfnresponse.send(event, context, cfnresponse.FAILED, {})
         Environment:
           Variables:
@@ -1783,8 +1755,9 @@
           - !Sub "OpsWorksRegisterer-${Stage}"
         Handler: index.handler
         Role: !GetAtt TrialOpsWorkRegisterHandlerIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 30
+  
     TrialOpsWorksInitialiseInstanceCookbooksIamRole:
       Type: AWS::IAM::Role
       Properties:
@@ -1798,18 +1771,9 @@
                   - events.amazonaws.com
               Action:
                 - sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         Policies:
-          - PolicyName: TrialOpsWorksInitInstanceCookbookLoggingPolicy
-            PolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                - Effect: Allow
-                  Action:
-                    - logs:CreateLogGroup
-                    - logs:CreateLogStream
-                    - logs:PutLogEvents
-                  Resource:
-                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
           - PolicyName: TrialOpsWorksInitInstanceCookbookPolicy
             PolicyDocument:
               Version: 2012-10-17
@@ -1819,23 +1783,29 @@
                     - opsworks:CreateDeployment
                   Resource:
                     - "*"
+          
     TrialOpsWorksInitInstanceCookbookHandler:
       Type: AWS::Lambda::Function
       Properties:
         Code:
           ZipFile: |
-            from __future__ import print_function
+            import logging
             import cfnresponse
-            import os
+            from os import environ
             import boto3
 
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+
+            client = boto3.client('opsworks', region_name='us-east-1')
+
             def handler(event, context):
+              logger.info(event)
               try:
-                if event['RequestType'] == 'Create':
-                  client = boto3.client('opsworks', region_name='us-east-1')
+                if event['RequestType'] == 'Create':                  
                   instance_id = event['ResourceProperties']['InstanceId']
                   response = client.create_deployment(
-                    StackId=os.environ['stack_id'],
+                    StackId=environ['stack_id'],
                     InstanceIds=[instance_id],
                     Command={
                       'Name': 'update_custom_cookbooks'
@@ -1844,10 +1814,10 @@
                   )
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, response)
                 else:
-                  print("Event is {}, doing nothing".format(event['RequestType']))
+                  logger.info("Event is {}, doing nothing".format(event['RequestType']))
                   cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
               except Exception as err:
-                print("{}\n".format(err))
+                logger.error(str(err))
                 cfnresponse.send(event, context, cfnresponse.FAILED, {})
         Environment:
           Variables:
@@ -1859,8 +1829,9 @@
           - !Sub "CookbookRunner-${Stage}"
         Handler: index.handler
         Role: !GetAtt TrialOpsWorksInitialiseInstanceCookbooksIamRole.Arn
-        Runtime: python2.7
+        Runtime: python3.6
         Timeout: 10
+  
   Outputs:
     DistributionName:
       Description: The CloudFront distribution name to point a R53 entry to.
